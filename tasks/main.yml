@@ -1,2 +1,75 @@
 ---
 # tasks file for ansible-role-rhel-fips
+
+- name: "Check if listed package is installed or not on Debian Linux family"
+  package:
+    name: prelink
+    state: present
+  check_mode: true
+  ignore_errors: true
+  register: prelink_check
+
+- debug:
+    var: prelink_check
+
+- name: Disable prelink
+  ansible.builtin.replace:
+    path: /etc/sysconfig/prelink
+    regexp: '^PRELINKING=yes'
+    replace: '^PRELINKING=no'
+  when: prelink_check.rc == 0
+
+- name: undo prelink actions
+  shell: prelink -uav >> /var/log/prelink/prelink.log 2>&1
+  when: prelink_check is succeeded
+
+- name: remove prelink cache
+  file:
+    path: /etc/prelink.cache
+    state: absent
+  when: prelink_check is succeeded
+
+- name: Install dracut-fips on RHEL 6/7
+  package:
+    name: dracut-fips
+    state: present
+  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7')
+
+- name: Check for aes CPU support
+  shell: grep -qw aes /proc/cpuinfo && echo YES || echo no
+  register: aes_support
+
+# Enable repos on RHEL 6
+#yum-config-manager --enable rhel-6-server-optional-rpms --enable rhel-6-workstation-optional-rpms
+- name: Install dracut-fips-aesni on RHEL 6/7
+  package:
+    name: dracut-fips-aesni
+    state: present
+  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7') and
+        (aes_support.stdout == "YES")
+
+- name: Move current initramfs to backuo
+  shell: mv -v /boot/initramfs-$(uname -r).img{,.bak}
+
+- name: Run dracut (RHEL 6/7)
+  shell: dracut
+  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7')
+
+- name: Configure kernel params
+  shell: grubby --update-kernel=$(grubby --default-kernel) --args=fips=1
+  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7')
+
+- name: Check if /boot is on its own partition
+  shell: findmnt -no uuid /boot
+  ignore_errors: true
+  register: boot_uuid
+
+- name: Set default kernel
+  shell: grubby --update-kernel=$(grubby --default-kernel) --args=boot=UUID={{ boot_uuid.stdout }}
+  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7') and
+        boot_uuid.rc == 0
+
+#sed -i '/^GRUB_CMDLINE_LINUX=/s/"$/ fips=1"/' /etc/default/grub
+#uuid=$(findmnt -no uuid /boot)
+#[[ -n $uuid ]] && sed -i "/^GRUB_CMDLINE_LINUX=/s/\"$/ boot=UUID=${uuid}\"/" /etc/default/grub
+#  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7')
