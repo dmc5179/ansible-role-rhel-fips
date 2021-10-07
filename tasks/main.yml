@@ -1,6 +1,13 @@
 ---
 # tasks file for ansible-role-rhel-fips
 
+#- name: Show host vars
+#  debug:
+#    var: hostvars[inventory_hostname].ansible_facts.kernel
+
+#- fail:
+#    msg: "Stop here"
+
 - name: "Check if listed package is installed or not on Debian Linux family"
   package:
     name: prelink
@@ -48,8 +55,16 @@
   when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7') and
         (aes_support.stdout == "YES")
 
-- name: Move current initramfs to backuo
-  shell: mv -v /boot/initramfs-$(uname -r).img{,.bak}
+- name: Copy current initramfs to backup
+  ansible.builtin.copy:
+    src: "/boot/initramfs-{{ hostvars[inventory_hostname].ansible_facts.kernel }}.img"
+    dest: "/boot/initramfs-{{ hostvars[inventory_hostname].ansible_facts.kernel }}.img.bak"
+    remote_src: true
+
+- name: Remove existing initramfs
+  file:
+    path: "/boot/initramfs-{{ hostvars[inventory_hostname].ansible_facts.kernel }}.img"
+    state: absent
 
 - name: Run dracut (RHEL 6/7)
   shell: dracut
@@ -64,12 +79,17 @@
   ignore_errors: true
   register: boot_uuid
 
-- name: Set default kernel
+- name: Set default kernel with boot arg
   shell: grubby --update-kernel=$(grubby --default-kernel) --args=boot=UUID={{ boot_uuid.stdout }}
   when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7') and
         boot_uuid.rc == 0
 
-#sed -i '/^GRUB_CMDLINE_LINUX=/s/"$/ fips=1"/' /etc/default/grub
-#uuid=$(findmnt -no uuid /boot)
-#[[ -n $uuid ]] && sed -i "/^GRUB_CMDLINE_LINUX=/s/\"$/ boot=UUID=${uuid}\"/" /etc/default/grub
-#  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7')
+- name: Update grub command line with fips argument
+  shell: sed -i '/^GRUB_CMDLINE_LINUX=/s/"$/ fips=1"/' /etc/default/grub
+  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7') and
+        boot_uuid.rc == 0
+
+#- name: Add boot arg to grub config
+#  shell: sed -i "/^GRUB_CMDLINE_LINUX=/s/\"$/ boot=UUID=${uuid}\"/" /etc/default/grub
+#  when: (ansible_distribution == 'RedHat' and ansible_distribution_major_version == '7') and
+#        boot_uuid.rc == 0
